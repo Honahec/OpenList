@@ -218,3 +218,12 @@ type DirectUploader interface {
 	// return errs.NotImplement if the driver does not support the given direct upload tool
 	GetDirectUploadInfo(ctx context.Context, tool string, dstDir model.Obj, fileName string, fileSize int64) (any, error)
 }
+
+// MultipartDirectUploader extends DirectUploader with storage-native multipart uploads.
+// File contents are uploaded directly from the client to the storage using the
+// presigned part URLs returned by GetDirectUploadPartInfo.
+type MultipartDirectUploader interface {
+	GetDirectUploadPartInfo(ctx context.Context, dstDir model.Obj, fileName, uploadID string, partNumber int64) (*model.HttpDirectUploadPartInfo, error)
+	CompleteDirectUpload(ctx context.Context, dstDir model.Obj, fileName, uploadID string) error
+	AbortDirectUpload(ctx context.Context, dstDir model.Obj, fileName, uploadID string) error
+}

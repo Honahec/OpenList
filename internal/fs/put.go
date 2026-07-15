@@ -117,3 +117,27 @@ func getDirectUploadInfo(ctx context.Context, tool, dstDirPath, dstName string, 
 	}
 	return op.GetDirectUploadInfo(ctx, tool, storage, dstDirActualPath, dstName, fileSize, overwrite)
 }
+
+func getDirectUploadPartInfo(ctx context.Context, dstDirPath, dstName, uploadID string, partNumber int64) (*model.HttpDirectUploadPartInfo, error) {
+	storage, dstDirActualPath, err := op.GetStorageAndActualPath(dstDirPath)
+	if err != nil {
+		return nil, errors.WithMessage(err, "failed get storage")
+	}
+	return op.GetDirectUploadPartInfo(ctx, storage, dstDirActualPath, dstName, uploadID, partNumber)
+}
+
+func completeDirectUpload(ctx context.Context, dstDirPath, dstName, uploadID string, fileSize int64) error {
+	storage, dstDirActualPath, err := op.GetStorageAndActualPath(dstDirPath)
+	if err != nil {
+		return errors.WithMessage(err, "failed get storage")
+	}
+	return op.CompleteDirectUpload(ctx, storage, dstDirActualPath, dstName, uploadID, fileSize)
+}
+
+func abortDirectUpload(ctx context.Context, dstDirPath, dstName, uploadID string) error {
+	storage, dstDirActualPath, err := op.GetStorageAndActualPath(dstDirPath)
+	if err != nil {
+		return errors.WithMessage(err, "failed get storage")
+	}
+	return op.AbortDirectUpload(ctx, storage, dstDirActualPath, dstName, uploadID)
+}

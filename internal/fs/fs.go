@@ -206,3 +206,15 @@ func GetDirectUploadInfo(ctx context.Context, tool, path, dstName string, fileSi
 	}
 	return info, err
 }
+
+func GetDirectUploadPartInfo(ctx context.Context, path, dstName, uploadID string, partNumber int64) (*model.HttpDirectUploadPartInfo, error) {
+	return getDirectUploadPartInfo(ctx, path, dstName, uploadID, partNumber)
+}
+
+func CompleteDirectUpload(ctx context.Context, path, dstName, uploadID string, fileSize int64) error {
+	return completeDirectUpload(ctx, path, dstName, uploadID, fileSize)
+}
+
+func AbortDirectUpload(ctx context.Context, path, dstName, uploadID string) error {
+	return abortDirectUpload(ctx, path, dstName, uploadID)
+}

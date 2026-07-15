@@ -814,6 +814,76 @@ func GetDirectUploadInfo(ctx context.Context, tool string, storage driver.Driver
 	return info, nil
 }
 
+func GetDirectUploadPartInfo(ctx context.Context, storage driver.Driver, dstDirPath, dstName, uploadID string, partNumber int64) (*model.HttpDirectUploadPartInfo, error) {
+	du, dstDir, err := getMultipartDirectUploader(ctx, storage, dstDirPath)
+	if err != nil {
+		return nil, err
+	}
+	info, err := du.GetDirectUploadPartInfo(ctx, dstDir, dstName, uploadID, partNumber)
+	return info, errors.WithStack(err)
+}
+
+func CompleteDirectUpload(ctx context.Context, storage driver.Driver, dstDirPath, dstName, uploadID string, fileSize int64) error {
+	if uploadID != "" {
+		du, dstDir, err := getMultipartDirectUploader(ctx, storage, dstDirPath)
+		if err != nil {
+			return err
+		}
+		if err := du.CompleteDirectUpload(ctx, dstDir, dstName, uploadID); err != nil {
+			return errors.WithStack(err)
+		}
+	}
+	return FinalizeDirectUpload(ctx, storage, dstDirPath, dstName, fileSize)
+}
+
+func AbortDirectUpload(ctx context.Context, storage driver.Driver, dstDirPath, dstName, uploadID string) error {
+	du, dstDir, err := getMultipartDirectUploader(ctx, storage, dstDirPath)
+	if err != nil {
+		return err
+	}
+	return errors.WithStack(du.AbortDirectUpload(ctx, dstDir, dstName, uploadID))
+}
+
+func getMultipartDirectUploader(ctx context.Context, storage driver.Driver, dstDirPath string) (driver.MultipartDirectUploader, model.Obj, error) {
+	du, ok := storage.(driver.MultipartDirectUploader)
+	if !ok {
+		return nil, nil, errors.WithStack(errs.NotImplement)
+	}
+	if storage.Config().CheckStatus && storage.GetStorage().Status != WORK {
+		return nil, nil, errors.WithMessagef(errs.StorageNotInit, "storage status: %s", storage.GetStorage().Status)
+	}
+	dstDirPath = utils.FixAndCleanPath(dstDirPath)
+	dstDir, err := GetUnwrap(ctx, storage, dstDirPath)
+	if err != nil {
+		return nil, nil, errors.WithMessagef(err, "failed to get dir [%s]", dstDirPath)
+	}
+	if model.ObjHasMask(dstDir, model.NoWrite) {
+		return nil, nil, errors.WithStack(errs.PermissionDenied)
+	}
+	return du, dstDir, nil
+}
+
+// FinalizeDirectUpload verifies that a client-direct upload reached the storage,
+// invalidates stale caches, and runs the same object-update hook as a normal Put.
+func FinalizeDirectUpload(ctx context.Context, storage driver.Driver, dstDirPath, dstName string, fileSize int64) error {
+	dstDirPath = utils.FixAndCleanPath(dstDirPath)
+	dstPath := stdpath.Join(dstDirPath, dstName)
+	Cache.DeleteDirectory(storage, dstDirPath)
+	Cache.linkCache.DeleteKey(Key(storage, dstPath))
+	obj, err := GetUnwrap(ctx, storage, dstPath)
+	if err != nil {
+		return errors.WithMessage(err, "failed to verify directly uploaded object")
+	}
+	if fileSize >= 0 && obj.GetSize() != fileSize {
+		return errors.Errorf("directly uploaded object size mismatch: expected %d, got %d", fileSize, obj.GetSize())
+	}
+	Cache.InvalidateStorageDetails(storage)
+	if ctx.Value(conf.SkipHookKey) == nil && needHandleObjsUpdateHook() {
+		go objsUpdateHook(context.WithoutCancel(ctx), storage, dstDirPath, false)
+	}
+	return nil
+}
+
 func objsUpdateHook(ctx context.Context, storage driver.Driver, dirPath string, recursive bool) {
 	files, err := List(ctx, storage, dirPath, model.ListArgs{SkipHook: true})
 	if err != nil {
