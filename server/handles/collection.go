@@ -1,10 +1,14 @@
 package handles
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	stdpath "path"
+	"sort"
 	"strings"
 	"time"
 
@@ -35,9 +39,15 @@ type collectionUploadInfo struct {
 	UploadInfo    any    `json:"upload_info"`
 }
 
+const (
+	collectionVisitorCookie = "openlist_collection_visitor"
+	collectionVisitorLength = 48
+	collectionVisitorMaxAge = 365 * 24 * 60 * 60
+)
+
 func getCollection(c *gin.Context, id, password string) (*model.Sharing, string, error) {
 	s, err := op.GetSharingById(id)
-	if err != nil || !s.Collect || !s.Valid() {
+	if err != nil || !s.Collect || !s.ValidForCollectionView() {
 		return nil, "", errs.InvalidSharing
 	}
 	if !s.Verify(password) {
@@ -58,7 +68,7 @@ func getCollection(c *gin.Context, id, password string) (*model.Sharing, string,
 }
 
 func CollectionGet(c *gin.Context, req *FsGetReq) {
-	id, err := collectionIDFromPath(req.Path)
+	id, relative, err := collectionPathFromPath(req.Path)
 	if err != nil {
 		common.ErrorResp(c, err, 400)
 		return
@@ -68,14 +78,32 @@ func CollectionGet(c *gin.Context, req *FsGetReq) {
 		common.ErrorResp(c, err, 403)
 		return
 	}
+	visitorHash := collectionVisitorHash(c)
+	if relative == "" {
+		common.SuccessResp(c, FsGetResp{
+			ObjResp: ObjResp{Name: id, IsDir: true, Modified: time.Time{}, Created: time.Time{}},
+			Readme:  collectionReadme(s), Header: s.Header, Provider: "collection", Related: []ObjResp{},
+		})
+		return
+	}
+	uploads, err := op.GetCompletedCollectionUploads(id, visitorHash)
+	if err != nil {
+		common.ErrorResp(c, err, 500)
+		return
+	}
+	obj, ok := collectionObject(uploads, relative)
+	if !ok {
+		common.ErrorStrResp(c, "object not found", 404)
+		return
+	}
 	common.SuccessResp(c, FsGetResp{
-		ObjResp: ObjResp{Name: id, IsDir: true, Modified: time.Time{}, Created: time.Time{}},
+		ObjResp: obj,
 		Readme:  collectionReadme(s), Header: s.Header, Provider: "collection", Related: []ObjResp{},
 	})
 }
 
 func CollectionList(c *gin.Context, req *ListReq) {
-	id, err := collectionIDFromPath(req.Path)
+	id, relative, err := collectionPathFromPath(req.Path)
 	if err != nil {
 		common.ErrorResp(c, err, 400)
 		return
@@ -90,10 +118,27 @@ func CollectionList(c *gin.Context, req *ListReq) {
 		common.ErrorResp(c, err, 500)
 		return
 	}
+	uploads, err := op.GetCompletedCollectionUploads(id, collectionVisitorHash(c))
+	if err != nil {
+		common.ErrorResp(c, err, 500)
+		return
+	}
+	content, exists := collectionChildren(uploads, relative)
+	if !exists {
+		common.ErrorStrResp(c, "object not found", 404)
+		return
+	}
+	total := len(content)
+	content = paginateCollectionObjects(content, req.Page, req.PerPage)
+	canUpload := s.Valid()
+	var directUploadTools []string
+	if canUpload {
+		directUploadTools = op.GetDirectUploadTools(storage)
+	}
 	common.SuccessResp(c, FsListResp{
-		Content: []ObjResp{}, Total: 0, Readme: collectionReadme(s), Header: s.Header,
-		Write: true, WriteContentBypass: true, Provider: "collection",
-		DirectUploadTools: op.GetDirectUploadTools(storage),
+		Content: content, Total: int64(total), Readme: collectionReadme(s), Header: s.Header,
+		Write: canUpload, WriteContentBypass: canUpload, Provider: "collection",
+		DirectUploadTools: directUploadTools,
 	})
 }
 
@@ -108,7 +153,10 @@ func CollectionGetDirectUploadInfo(c *gin.Context) {
 		common.ErrorResp(c, err, 403)
 		return
 	}
-	_ = s
+	if !s.Valid() {
+		common.ErrorResp(c, errs.InvalidSharing, 403)
+		return
+	}
 	name, err := collectionFileName(req.FileName)
 	if err != nil {
 		common.ErrorResp(c, err, 400)
@@ -135,7 +183,7 @@ func CollectionGetDirectUploadInfo(c *gin.Context) {
 	expires := time.Now().Add(4 * time.Hour)
 	if err := op.CreateCollectionUpload(&model.CollectionUpload{
 		ID: sessionID, SharingID: s.ID, FileName: name, FileSize: req.FileSize,
-		UploadID: uploadID, Expires: expires,
+		UploadID: uploadID, Expires: expires, VisitorHash: collectionVisitorHash(c),
 	}); err != nil {
 		if uploadID != "" {
 			_ = fs.AbortDirectUpload(c, target, name, uploadID)
@@ -162,7 +210,7 @@ func CollectionGetDirectUploadPartInfo(c *gin.Context) {
 		common.ErrorStrResp(c, "invalid multipart upload", 400)
 		return
 	}
-	if _, err := verifyCollectionUpload(c.Param("id"), req); err != nil {
+	if _, err := verifyCollectionUpload(c, c.Param("id"), req); err != nil {
 		common.ErrorResp(c, err, 403)
 		return
 	}
@@ -185,7 +233,7 @@ func CollectionCompleteDirectUpload(c *gin.Context) {
 		common.ErrorResp(c, err, 403)
 		return
 	}
-	upload, err := verifyCollectionUpload(s.ID, req)
+	upload, err := verifyCollectionUpload(c, s.ID, req)
 	if err != nil {
 		common.ErrorResp(c, err, 403)
 		return
@@ -217,7 +265,7 @@ func CollectionAbortDirectUpload(c *gin.Context) {
 		common.ErrorResp(c, err, 403)
 		return
 	}
-	upload, err := verifyCollectionUpload(c.Param("id"), req)
+	upload, err := verifyCollectionUpload(c, c.Param("id"), req)
 	if err != nil {
 		common.ErrorResp(c, err, 403)
 		return
@@ -269,12 +317,161 @@ func uniqueCollectionName(c *gin.Context, target, name string) string {
 	return stdpath.Join(dir, base+"-"+random.String(8)+ext)
 }
 
+func collectionPathFromPath(raw string) (string, string, error) {
+	value := strings.TrimPrefix(raw, "/@c")
+	value = strings.TrimPrefix(value, "/")
+	if value == "" {
+		return "", "", errors.New("invalid collection path")
+	}
+	idRaw, relativeRaw, _ := strings.Cut(value, "/")
+	id, err := url.PathUnescape(idRaw)
+	if err != nil || id == "" || strings.Contains(id, "/") {
+		return "", "", errors.New("invalid collection path")
+	}
+	if relativeRaw == "" {
+		return id, "", nil
+	}
+	relative, err := collectionFileName(relativeRaw)
+	if err != nil {
+		return "", "", errors.New("invalid collection path")
+	}
+	return id, relative, nil
+}
+
+func collectionVisitorHash(c *gin.Context) string {
+	visitor, err := c.Cookie(collectionVisitorCookie)
+	if err != nil || !validCollectionVisitor(visitor) {
+		visitor = random.String(collectionVisitorLength)
+		c.SetSameSite(http.SameSiteLaxMode)
+		c.SetCookie(collectionVisitorCookie, visitor, collectionVisitorMaxAge, "/", "", collectionCookieSecure(c), true)
+	}
+	digest := sha256.Sum256([]byte(visitor))
+	return hex.EncodeToString(digest[:])
+}
+
+func validCollectionVisitor(visitor string) bool {
+	if len(visitor) != collectionVisitorLength {
+		return false
+	}
+	for _, char := range visitor {
+		if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9')) {
+			return false
+		}
+	}
+	return true
+}
+
+func collectionCookieSecure(c *gin.Context) bool {
+	if c.Request.TLS != nil {
+		return true
+	}
+	proto := strings.TrimSpace(strings.Split(c.GetHeader("X-Forwarded-Proto"), ",")[0])
+	return strings.EqualFold(proto, "https")
+}
+
+func collectionObject(uploads []model.CollectionUpload, relative string) (ObjResp, bool) {
+	var dirTime time.Time
+	for _, upload := range uploads {
+		completedAt := collectionCompletedAt(upload)
+		if upload.FileName == relative {
+			return ObjResp{
+				Name: stdpath.Base(relative), Size: upload.FileSize, IsDir: false,
+				Modified: completedAt, Created: completedAt,
+			}, true
+		}
+		if strings.HasPrefix(upload.FileName, relative+"/") && completedAt.After(dirTime) {
+			dirTime = completedAt
+		}
+	}
+	if !dirTime.IsZero() {
+		return ObjResp{
+			Name: stdpath.Base(relative), IsDir: true, Type: 1,
+			Modified: dirTime, Created: dirTime,
+		}, true
+	}
+	return ObjResp{}, false
+}
+
+func collectionChildren(uploads []model.CollectionUpload, relative string) ([]ObjResp, bool) {
+	children := make(map[string]ObjResp)
+	exists := relative == ""
+	prefix := ""
+	if relative != "" {
+		prefix = relative + "/"
+	}
+	for _, upload := range uploads {
+		if relative != "" && !strings.HasPrefix(upload.FileName, prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(upload.FileName, prefix)
+		if rest == "" {
+			continue
+		}
+		exists = true
+		name, _, nested := strings.Cut(rest, "/")
+		completedAt := collectionCompletedAt(upload)
+		current, found := children[name]
+		if nested {
+			if !found || !current.IsDir || completedAt.After(current.Modified) {
+				children[name] = ObjResp{
+					Name: name, IsDir: true, Type: 1,
+					Modified: completedAt, Created: completedAt,
+				}
+			}
+			continue
+		}
+		if found && current.IsDir {
+			continue
+		}
+		children[name] = ObjResp{
+			Name: name, Size: upload.FileSize, IsDir: false,
+			Modified: completedAt, Created: completedAt,
+		}
+	}
+	content := make([]ObjResp, 0, len(children))
+	for _, child := range children {
+		content = append(content, child)
+	}
+	sort.Slice(content, func(i, j int) bool {
+		if content[i].IsDir != content[j].IsDir {
+			return content[i].IsDir
+		}
+		return strings.ToLower(content[i].Name) < strings.ToLower(content[j].Name)
+	})
+	return content, exists
+}
+
+func collectionCompletedAt(upload model.CollectionUpload) time.Time {
+	if upload.CompletedAt != nil {
+		return *upload.CompletedAt
+	}
+	return time.Time{}
+}
+
+func paginateCollectionObjects(content []ObjResp, page, perPage int) []ObjResp {
+	if len(content) == 0 || page < 1 || perPage < 1 {
+		return content
+	}
+	if page-1 > len(content)/perPage {
+		return []ObjResp{}
+	}
+	start := (page - 1) * perPage
+	if start >= len(content) {
+		return []ObjResp{}
+	}
+	end := start + perPage
+	if end < start || end > len(content) {
+		end = len(content)
+	}
+	return content[start:end]
+}
+
 func collectionIDFromPath(raw string) (string, error) {
-	value := strings.Trim(strings.TrimPrefix(raw, "/@c"), "/")
-	if value == "" || strings.Contains(value, "/") {
+	id, relative, err := collectionPathFromPath(raw)
+	if err != nil || relative != "" {
 		return "", errors.New("invalid collection path")
 	}
-	return url.PathUnescape(value)
+	return id, nil
 }
 
 func collectionReadme(s *model.Sharing) string {
@@ -288,7 +485,7 @@ func collectionUploadTokenData(id, sessionID, name string, size int64, uploadID 
 	return fmt.Sprintf("collection:%s:%s:%s:%d:%s", id, sessionID, name, size, uploadID)
 }
 
-func verifyCollectionUpload(id string, req collectionReq) (*model.CollectionUpload, error) {
+func verifyCollectionUpload(c *gin.Context, id string, req collectionReq) (*model.CollectionUpload, error) {
 	name, err := collectionFileName(req.FileName)
 	if err != nil {
 		return nil, err
@@ -305,6 +502,9 @@ func verifyCollectionUpload(id string, req collectionReq) (*model.CollectionUplo
 	}
 	if upload.SharingID != id || upload.FileName != name || upload.FileSize != req.FileSize || upload.UploadID != req.UploadID {
 		return nil, errors.New("collection upload session does not match request")
+	}
+	if upload.VisitorHash == "" || upload.VisitorHash != collectionVisitorHash(c) {
+		return nil, errors.New("collection upload session belongs to another visitor")
 	}
 	if time.Now().After(upload.Expires) {
 		return nil, errors.New("collection upload session expired")

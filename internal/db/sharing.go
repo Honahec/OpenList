@@ -112,6 +112,15 @@ func GetCollectionUpload(id string) (*model.CollectionUpload, error) {
 	return &upload, nil
 }
 
+func GetCompletedCollectionUploads(sharingID, visitorHash string) ([]model.CollectionUpload, error) {
+	uploads := make([]model.CollectionUpload, 0)
+	if err := db.Where("sharing_id = ? AND visitor_hash = ? AND completed = ?", sharingID, visitorHash, true).
+		Order("completed_at ASC, id ASC").Find(&uploads).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return uploads, nil
+}
+
 func CompleteCollectionUpload(id, sharingID string) (bool, error) {
 	alreadyCompleted := false
 	err := db.Transaction(func(tx *gorm.DB) error {
@@ -135,7 +144,11 @@ func CompleteCollectionUpload(id, sharingID string) (bool, error) {
 		if result.RowsAffected != 1 {
 			return errors.New("collection upload limit reached")
 		}
-		return tx.Model(&upload).UpdateColumn("completed", true).Error
+		now := time.Now()
+		return tx.Model(&upload).Updates(map[string]any{
+			"completed":    true,
+			"completed_at": &now,
+		}).Error
 	})
 	return alreadyCompleted, errors.WithStack(err)
 }

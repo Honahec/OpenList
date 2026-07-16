@@ -169,6 +169,10 @@ func GetCollectionUpload(id string) (*model.CollectionUpload, error) {
 	return db.GetCollectionUpload(id)
 }
 
+func GetCompletedCollectionUploads(sharingID, visitorHash string) ([]model.CollectionUpload, error) {
+	return db.GetCompletedCollectionUploads(sharingID, visitorHash)
+}
+
 func CompleteCollectionUpload(id, sharingID string) (bool, error) {
 	alreadyCompleted, err := db.CompleteCollectionUpload(id, sharingID)
 	if err == nil {

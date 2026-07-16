@@ -25,20 +25,29 @@ type Sharing struct {
 }
 
 type CollectionUpload struct {
-	ID        string    `json:"id" gorm:"type:varchar(32);primaryKey"`
-	SharingID string    `json:"sharing_id" gorm:"type:varchar(64);index"`
-	FileName  string    `json:"file_name" gorm:"type:text"`
-	FileSize  int64     `json:"file_size"`
-	UploadID  string    `json:"upload_id" gorm:"type:text"`
-	Expires   time.Time `json:"expires" gorm:"index"`
-	Completed bool      `json:"completed"`
+	ID          string     `json:"id" gorm:"type:varchar(32);primaryKey"`
+	SharingID   string     `json:"sharing_id" gorm:"type:varchar(64);index;index:idx_collection_visitor,priority:1"`
+	VisitorHash string     `json:"-" gorm:"type:char(64);index:idx_collection_visitor,priority:2"`
+	FileName    string     `json:"file_name" gorm:"type:text"`
+	FileSize    int64      `json:"file_size"`
+	UploadID    string     `json:"upload_id" gorm:"type:text"`
+	Expires     time.Time  `json:"expires" gorm:"index"`
+	Completed   bool       `json:"completed" gorm:"index:idx_collection_visitor,priority:3"`
+	CompletedAt *time.Time `json:"completed_at"`
 }
 
 func (s *Sharing) Valid() bool {
-	if s.Disabled {
+	if !s.ValidForCollectionView() {
 		return false
 	}
 	if s.MaxAccessed > 0 && s.Accessed >= s.MaxAccessed {
+		return false
+	}
+	return true
+}
+
+func (s *Sharing) ValidForCollectionView() bool {
+	if s.Disabled {
 		return false
 	}
 	if len(s.Files) == 0 {
