@@ -28,16 +28,6 @@ type collectionReq struct {
 	UploadSession string `json:"upload_session" form:"upload_session"`
 }
 
-type collectionInfo struct {
-	ID        string     `json:"id"`
-	Remark    string     `json:"remark"`
-	Readme    string     `json:"readme"`
-	Header    string     `json:"header"`
-	Expires   *time.Time `json:"expires"`
-	Remaining int        `json:"remaining"`
-	Tools     []string   `json:"direct_upload_tools"`
-}
-
 type collectionUploadInfo struct {
 	FileName      string `json:"file_name"`
 	UploadToken   string `json:"upload_token"`
@@ -45,8 +35,8 @@ type collectionUploadInfo struct {
 	UploadInfo    any    `json:"upload_info"`
 }
 
-func getCollection(c *gin.Context, password string) (*model.Sharing, string, error) {
-	s, err := op.GetSharingById(c.Param("id"))
+func getCollection(c *gin.Context, id, password string) (*model.Sharing, string, error) {
+	s, err := op.GetSharingById(id)
 	if err != nil || !s.Collect || !s.Valid() {
 		return nil, "", errs.InvalidSharing
 	}
@@ -67,8 +57,30 @@ func getCollection(c *gin.Context, password string) (*model.Sharing, string, err
 	return s, target, nil
 }
 
-func CollectionInfo(c *gin.Context) {
-	s, target, err := getCollection(c, c.Query("password"))
+func CollectionGet(c *gin.Context, req *FsGetReq) {
+	id, err := collectionIDFromPath(req.Path)
+	if err != nil {
+		common.ErrorResp(c, err, 400)
+		return
+	}
+	s, _, err := getCollection(c, id, req.Password)
+	if err != nil {
+		common.ErrorResp(c, err, 403)
+		return
+	}
+	common.SuccessResp(c, FsGetResp{
+		ObjResp: ObjResp{Name: id, IsDir: true, Modified: time.Time{}, Created: time.Time{}},
+		Readme:  collectionReadme(s), Header: s.Header, Provider: "collection", Related: []ObjResp{},
+	})
+}
+
+func CollectionList(c *gin.Context, req *ListReq) {
+	id, err := collectionIDFromPath(req.Path)
+	if err != nil {
+		common.ErrorResp(c, err, 400)
+		return
+	}
+	s, target, err := getCollection(c, id, req.Password)
 	if err != nil {
 		common.ErrorResp(c, err, 403)
 		return
@@ -78,13 +90,10 @@ func CollectionInfo(c *gin.Context) {
 		common.ErrorResp(c, err, 500)
 		return
 	}
-	remaining := -1
-	if s.MaxAccessed > 0 {
-		remaining = s.MaxAccessed - s.Accessed
-	}
-	common.SuccessResp(c, collectionInfo{
-		ID: s.ID, Remark: s.Remark, Readme: s.Readme, Header: s.Header,
-		Expires: s.Expires, Remaining: remaining, Tools: op.GetDirectUploadTools(storage),
+	common.SuccessResp(c, FsListResp{
+		Content: []ObjResp{}, Total: 0, Readme: collectionReadme(s), Header: s.Header,
+		Write: true, WriteContentBypass: true, Provider: "collection",
+		DirectUploadTools: op.GetDirectUploadTools(storage),
 	})
 }
 
@@ -94,7 +103,7 @@ func CollectionGetDirectUploadInfo(c *gin.Context) {
 		common.ErrorResp(c, err, 400)
 		return
 	}
-	s, target, err := getCollection(c, req.Password)
+	s, target, err := getCollection(c, c.Param("id"), req.Password)
 	if err != nil {
 		common.ErrorResp(c, err, 403)
 		return
@@ -144,7 +153,7 @@ func CollectionGetDirectUploadPartInfo(c *gin.Context) {
 		common.ErrorResp(c, err, 400)
 		return
 	}
-	_, target, err := getCollection(c, req.Password)
+	_, target, err := getCollection(c, c.Param("id"), req.Password)
 	if err != nil {
 		common.ErrorResp(c, err, 403)
 		return
@@ -171,7 +180,7 @@ func CollectionCompleteDirectUpload(c *gin.Context) {
 		common.ErrorResp(c, err, 400)
 		return
 	}
-	s, target, err := getCollection(c, req.Password)
+	s, target, err := getCollection(c, c.Param("id"), req.Password)
 	if err != nil {
 		common.ErrorResp(c, err, 403)
 		return
@@ -203,7 +212,7 @@ func CollectionAbortDirectUpload(c *gin.Context) {
 		common.ErrorResp(c, err, 400)
 		return
 	}
-	_, target, err := getCollection(c, req.Password)
+	_, target, err := getCollection(c, c.Param("id"), req.Password)
 	if err != nil {
 		common.ErrorResp(c, err, 403)
 		return
@@ -233,20 +242,46 @@ func collectionFileName(raw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	name = stdpath.Base(name)
-	if err := checkRelativePath(name); err != nil || name == "." || name == "/" {
+	name = strings.TrimPrefix(name, "/")
+	if name == "" || strings.Contains(name, "\\") {
 		return "", errors.New("invalid file name")
 	}
-	return name, nil
+	parts := strings.Split(name, "/")
+	for _, part := range parts {
+		if err := checkRelativePath(part); err != nil {
+			return "", errors.New("invalid file name")
+		}
+	}
+	clean := stdpath.Clean(name)
+	if clean != name {
+		return "", errors.New("invalid file name")
+	}
+	return clean, nil
 }
 
 func uniqueCollectionName(c *gin.Context, target, name string) string {
 	if obj, _ := fs.Get(c.Request.Context(), stdpath.Join(target, name), &fs.GetArgs{NoLog: true}); obj == nil {
 		return name
 	}
-	ext := stdpath.Ext(name)
-	base := strings.TrimSuffix(name, ext)
-	return base + "-" + random.String(8) + ext
+	dir, file := stdpath.Split(name)
+	ext := stdpath.Ext(file)
+	base := strings.TrimSuffix(file, ext)
+	return stdpath.Join(dir, base+"-"+random.String(8)+ext)
+}
+
+func collectionIDFromPath(raw string) (string, error) {
+	value := strings.Trim(strings.TrimPrefix(raw, "/@c"), "/")
+	if value == "" || strings.Contains(value, "/") {
+		return "", errors.New("invalid collection path")
+	}
+	return url.PathUnescape(value)
+}
+
+func collectionReadme(s *model.Sharing) string {
+	if strings.TrimSpace(s.Readme) != "" {
+		return s.Readme
+	}
+	return s.Remark
 }
 
 func collectionUploadTokenData(id, sessionID, name string, size int64, uploadID string) string {

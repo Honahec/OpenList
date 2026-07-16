@@ -102,7 +102,6 @@ func Init(e *gin.Engine) {
 	public.Any("/offline_download_tools", handles.OfflineDownloadTools)
 	public.Any("/archive_extensions", handles.ArchiveExtensions)
 	collection := public.Group("/collection/:id")
-	collection.GET("/info", handles.CollectionInfo)
 	collection.POST("/get_direct_upload_info", handles.CollectionGetDirectUploadInfo)
 	collection.POST("/get_direct_upload_part_info", handles.CollectionGetDirectUploadPartInfo)
 	collection.POST("/complete_direct_upload", handles.CollectionCompleteDirectUpload)
