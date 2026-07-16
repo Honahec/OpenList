@@ -3,6 +3,7 @@ package handles
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,5 +131,83 @@ func TestCollectionVisitorCookieIsStable(t *testing.T) {
 	}
 	if len(secondRecorder.Result().Cookies()) != 0 {
 		t.Fatal("existing valid visitor cookie was replaced")
+	}
+}
+
+func TestParseCollectionFields(t *testing.T) {
+	fields, err := parseCollectionFields("* 姓名\n学号\n\n备注")
+	if err != nil {
+		t.Fatalf("parseCollectionFields(): %v", err)
+	}
+	if len(fields) != 3 || fields[0].Name != "姓名" || !fields[0].Required || fields[1].Required {
+		t.Fatalf("unexpected fields: %#v", fields)
+	}
+	if _, err := parseCollectionFields("姓名\n姓名"); err == nil {
+		t.Fatal("parseCollectionFields accepted duplicate names")
+	}
+	if _, err := parseCollectionFields("*"); err == nil {
+		t.Fatal("parseCollectionFields accepted an empty required name")
+	}
+}
+
+func TestValidateCollectionValues(t *testing.T) {
+	fields := []model.CollectionField{
+		{Name: "姓名", Required: true},
+		{Name: "备注"},
+	}
+	values, err := validateCollectionValues(fields, map[string]string{"姓名": " Alice ", "ignored": "secret"})
+	if err != nil {
+		t.Fatalf("validateCollectionValues(): %v", err)
+	}
+	if values["姓名"] != "Alice" || values["备注"] != "" {
+		t.Fatalf("unexpected normalized values: %#v", values)
+	}
+	if _, ok := values["ignored"]; ok {
+		t.Fatal("unknown collection field was persisted")
+	}
+	if _, err := validateCollectionValues(fields, map[string]string{}); err == nil {
+		t.Fatal("validateCollectionValues accepted a missing required value")
+	}
+}
+
+func TestCollectionSubmissionFolderIsScoped(t *testing.T) {
+	first := collectionSubmissionFolder("collect-1", "visitor-hash")
+	if first != collectionSubmissionFolder("collect-1", "visitor-hash") {
+		t.Fatal("collection submission folder is not stable")
+	}
+	if first == collectionSubmissionFolder("collect-2", "visitor-hash") {
+		t.Fatal("collection submission folder was reused across shares")
+	}
+	if first == collectionSubmissionFolder("collect-1", "other-visitor") {
+		t.Fatal("collection submission folder was reused across visitors")
+	}
+}
+
+func TestVisibleCollectionUploadsHidePhysicalFolder(t *testing.T) {
+	submission := &model.CollectionSubmission{FolderName: "submission-private"}
+	uploads := []model.CollectionUpload{
+		{FileName: "submission-private/report.pdf"},
+		{FileName: "submission-private/folder/photo.jpg"},
+		{FileName: "submission-other/secret.txt"},
+	}
+	visible := visibleCollectionUploads(uploads, submission)
+	if len(visible) != 2 || visible[0].FileName != "report.pdf" || visible[1].FileName != "folder/photo.jpg" {
+		t.Fatalf("unexpected visible uploads: %#v", visible)
+	}
+	if len(visibleCollectionUploads(uploads, nil)) != 0 {
+		t.Fatal("uploads were visible without a visitor submission")
+	}
+}
+
+func TestRenderCollectionReadmeEscapesValues(t *testing.T) {
+	fields := []model.CollectionField{{Name: "姓名"}, {Name: "备注"}}
+	readme := renderCollectionReadme(fields, map[string]string{
+		"姓名": "Alice | Bob",
+		"备注": "<script>alert(1)</script>\nnext",
+	})
+	for _, want := range []string{"Alice \\| Bob", "&lt;script&gt;alert(1)&lt;/script&gt;<br>next"} {
+		if !strings.Contains(readme, want) {
+			t.Fatalf("README does not contain %q: %s", want, readme)
+		}
 	}
 }

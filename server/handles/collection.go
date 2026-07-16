@@ -1,10 +1,12 @@
 package handles
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"html"
 	"net/http"
 	"net/url"
 	stdpath "path"
@@ -17,6 +19,7 @@ import (
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
 	"github.com/OpenListTeam/OpenList/v4/internal/op"
 	"github.com/OpenListTeam/OpenList/v4/internal/sign"
+	"github.com/OpenListTeam/OpenList/v4/internal/stream"
 	"github.com/OpenListTeam/OpenList/v4/pkg/utils/random"
 	"github.com/OpenListTeam/OpenList/v4/server/common"
 	"github.com/gin-gonic/gin"
@@ -39,10 +42,24 @@ type collectionUploadInfo struct {
 	UploadInfo    any    `json:"upload_info"`
 }
 
+type collectionSubmissionReq struct {
+	Password string            `json:"password" form:"password"`
+	Values   map[string]string `json:"values" form:"values"`
+}
+
+type collectionFormResp struct {
+	Fields    []model.CollectionField `json:"fields"`
+	Values    map[string]string       `json:"values"`
+	Submitted bool                    `json:"submitted"`
+}
+
 const (
 	collectionVisitorCookie = "openlist_collection_visitor"
 	collectionVisitorLength = 48
 	collectionVisitorMaxAge = 365 * 24 * 60 * 60
+	collectionMaxFields     = 20
+	collectionMaxFieldName  = 64
+	collectionMaxValue      = 2048
 )
 
 func getCollection(c *gin.Context, id, password string) (*model.Sharing, string, error) {
@@ -79,10 +96,19 @@ func CollectionGet(c *gin.Context, req *FsGetReq) {
 		return
 	}
 	visitorHash := collectionVisitorHash(c)
+	fields, submission, _, err := collectionSubmissionState(s, visitorHash)
+	if err != nil {
+		common.ErrorResp(c, err, 500)
+		return
+	}
+	readme := collectionReadme(s)
+	if len(fields) > 0 && submission != nil {
+		readme = renderCollectionReadme(fields, submission.Values)
+	}
 	if relative == "" {
 		common.SuccessResp(c, FsGetResp{
 			ObjResp: ObjResp{Name: id, IsDir: true, Modified: time.Time{}, Created: time.Time{}},
-			Readme:  collectionReadme(s), Header: s.Header, Provider: "collection", Related: []ObjResp{},
+			Readme:  readme, Header: s.Header, Provider: "collection", Related: []ObjResp{},
 		})
 		return
 	}
@@ -91,6 +117,9 @@ func CollectionGet(c *gin.Context, req *FsGetReq) {
 		common.ErrorResp(c, err, 500)
 		return
 	}
+	if len(fields) > 0 {
+		uploads = visibleCollectionUploads(uploads, submission)
+	}
 	obj, ok := collectionObject(uploads, relative)
 	if !ok {
 		common.ErrorStrResp(c, "object not found", 404)
@@ -98,7 +127,7 @@ func CollectionGet(c *gin.Context, req *FsGetReq) {
 	}
 	common.SuccessResp(c, FsGetResp{
 		ObjResp: obj,
-		Readme:  collectionReadme(s), Header: s.Header, Provider: "collection", Related: []ObjResp{},
+		Readme:  readme, Header: s.Header, Provider: "collection", Related: []ObjResp{},
 	})
 }
 
@@ -118,10 +147,19 @@ func CollectionList(c *gin.Context, req *ListReq) {
 		common.ErrorResp(c, err, 500)
 		return
 	}
-	uploads, err := op.GetCompletedCollectionUploads(id, collectionVisitorHash(c))
+	visitorHash := collectionVisitorHash(c)
+	fields, submission, collectionForm, err := collectionSubmissionState(s, visitorHash)
 	if err != nil {
 		common.ErrorResp(c, err, 500)
 		return
+	}
+	uploads, err := op.GetCompletedCollectionUploads(id, visitorHash)
+	if err != nil {
+		common.ErrorResp(c, err, 500)
+		return
+	}
+	if len(fields) > 0 {
+		uploads = visibleCollectionUploads(uploads, submission)
 	}
 	content, exists := collectionChildren(uploads, relative)
 	if !exists {
@@ -130,15 +168,19 @@ func CollectionList(c *gin.Context, req *ListReq) {
 	}
 	total := len(content)
 	content = paginateCollectionObjects(content, req.Page, req.PerPage)
-	canUpload := s.Valid()
+	canUpload := s.Valid() && (collectionForm == nil || collectionForm.Submitted)
 	var directUploadTools []string
 	if canUpload {
 		directUploadTools = op.GetDirectUploadTools(storage)
 	}
+	readme := collectionReadme(s)
+	if len(fields) > 0 && submission != nil {
+		readme = renderCollectionReadme(fields, submission.Values)
+	}
 	common.SuccessResp(c, FsListResp{
-		Content: content, Total: int64(total), Readme: collectionReadme(s), Header: s.Header,
+		Content: content, Total: int64(total), Readme: readme, Header: s.Header,
 		Write: canUpload, WriteContentBypass: canUpload, Provider: "collection",
-		DirectUploadTools: directUploadTools,
+		DirectUploadTools: directUploadTools, CollectionForm: collectionForm,
 	})
 }
 
@@ -162,6 +204,23 @@ func CollectionGetDirectUploadInfo(c *gin.Context) {
 		common.ErrorResp(c, err, 400)
 		return
 	}
+	visitorHash := collectionVisitorHash(c)
+	fields, submission, form, err := collectionSubmissionState(s, visitorHash)
+	if err != nil {
+		common.ErrorResp(c, err, 500)
+		return
+	}
+	if len(fields) > 0 {
+		if submission == nil || form == nil || !form.Submitted {
+			common.ErrorStrResp(c, "collection submission is required before uploading", 403)
+			return
+		}
+		if strings.EqualFold(name, "README.md") {
+			common.ErrorStrResp(c, "README.md is managed by the collection form", 400)
+			return
+		}
+		name = stdpath.Join(submission.FolderName, name)
+	}
 	name = uniqueCollectionName(c, target, name)
 	info, err := fs.GetDirectUploadInfo(c, "HttpDirect", target, name, req.FileSize, false)
 	if err != nil {
@@ -183,7 +242,7 @@ func CollectionGetDirectUploadInfo(c *gin.Context) {
 	expires := time.Now().Add(4 * time.Hour)
 	if err := op.CreateCollectionUpload(&model.CollectionUpload{
 		ID: sessionID, SharingID: s.ID, FileName: name, FileSize: req.FileSize,
-		UploadID: uploadID, Expires: expires, VisitorHash: collectionVisitorHash(c),
+		UploadID: uploadID, Expires: expires, VisitorHash: visitorHash,
 	}); err != nil {
 		if uploadID != "" {
 			_ = fs.AbortDirectUpload(c, target, name, uploadID)
@@ -283,6 +342,182 @@ func CollectionAbortDirectUpload(c *gin.Context) {
 	}
 	_ = op.DeleteCollectionUpload(upload.ID)
 	common.SuccessResp(c)
+}
+
+func CollectionUpdateSubmission(c *gin.Context) {
+	var req collectionSubmissionReq
+	if err := c.ShouldBind(&req); err != nil {
+		common.ErrorResp(c, err, 400)
+		return
+	}
+	s, target, err := getCollection(c, c.Param("id"), req.Password)
+	if err != nil {
+		common.ErrorResp(c, err, 403)
+		return
+	}
+	fields, err := parseCollectionFields(s.CollectionFields)
+	if err != nil {
+		common.ErrorResp(c, err, 500)
+		return
+	}
+	if len(fields) == 0 {
+		common.ErrorStrResp(c, "collection submission fields are not enabled", 400)
+		return
+	}
+	values, err := validateCollectionValues(fields, req.Values)
+	if err != nil {
+		common.ErrorResp(c, err, 400)
+		return
+	}
+	visitorHash := collectionVisitorHash(c)
+	submission, err := op.GetCollectionSubmission(s.ID, visitorHash)
+	if err != nil {
+		common.ErrorResp(c, err, 500)
+		return
+	}
+	if submission == nil {
+		submission = &model.CollectionSubmission{
+			SharingID: s.ID, VisitorHash: visitorHash,
+			FolderName: collectionSubmissionFolder(s.ID, visitorHash),
+		}
+	}
+	submission.Values = values
+	readme := renderCollectionReadme(fields, values)
+	if err := writeCollectionReadme(c, target, submission.FolderName, readme); err != nil {
+		common.ErrorResp(c, err, 500)
+		return
+	}
+	if err := op.SaveCollectionSubmission(submission); err != nil {
+		common.ErrorResp(c, err, 500)
+		return
+	}
+	common.SuccessResp(c, collectionFormResp{Fields: fields, Values: values, Submitted: true})
+}
+
+func parseCollectionFields(raw string) ([]model.CollectionField, error) {
+	if len(raw) > 4096 {
+		return nil, errors.New("collection fields are too long")
+	}
+	fields := make([]model.CollectionField, 0)
+	seen := make(map[string]struct{})
+	for _, line := range strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		required := strings.HasPrefix(line, "*")
+		if required {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "*"))
+		}
+		if line == "" {
+			return nil, errors.New("collection field name cannot be empty")
+		}
+		if len([]rune(line)) > collectionMaxFieldName {
+			return nil, errors.New("collection field name is too long")
+		}
+		if _, ok := seen[line]; ok {
+			return nil, fmt.Errorf("duplicate collection field: %s", line)
+		}
+		seen[line] = struct{}{}
+		fields = append(fields, model.CollectionField{Name: line, Required: required})
+		if len(fields) > collectionMaxFields {
+			return nil, fmt.Errorf("collection fields cannot exceed %d", collectionMaxFields)
+		}
+	}
+	return fields, nil
+}
+
+func validateCollectionValues(fields []model.CollectionField, input map[string]string) (map[string]string, error) {
+	values := make(map[string]string, len(fields))
+	for _, field := range fields {
+		value := strings.TrimSpace(input[field.Name])
+		if field.Required && value == "" {
+			return nil, fmt.Errorf("collection field [%s] is required", field.Name)
+		}
+		if len([]rune(value)) > collectionMaxValue {
+			return nil, fmt.Errorf("collection field [%s] is too long", field.Name)
+		}
+		values[field.Name] = value
+	}
+	return values, nil
+}
+
+func collectionSubmissionState(s *model.Sharing, visitorHash string) ([]model.CollectionField, *model.CollectionSubmission, *collectionFormResp, error) {
+	fields, err := parseCollectionFields(s.CollectionFields)
+	if err != nil || len(fields) == 0 {
+		return fields, nil, nil, err
+	}
+	submission, err := op.GetCollectionSubmission(s.ID, visitorHash)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	values := make(map[string]string)
+	submitted := false
+	if submission != nil {
+		for _, field := range fields {
+			values[field.Name] = submission.Values[field.Name]
+		}
+		_, validationErr := validateCollectionValues(fields, values)
+		submitted = validationErr == nil
+	}
+	return fields, submission, &collectionFormResp{Fields: fields, Values: values, Submitted: submitted}, nil
+}
+
+func collectionSubmissionFolder(sharingID, visitorHash string) string {
+	digest := sha256.Sum256([]byte(sharingID + "\x00" + visitorHash))
+	return "submission-" + hex.EncodeToString(digest[:12])
+}
+
+func visibleCollectionUploads(uploads []model.CollectionUpload, submission *model.CollectionSubmission) []model.CollectionUpload {
+	if submission == nil {
+		return []model.CollectionUpload{}
+	}
+	prefix := submission.FolderName + "/"
+	visible := make([]model.CollectionUpload, 0, len(uploads))
+	for _, upload := range uploads {
+		if !strings.HasPrefix(upload.FileName, prefix) {
+			continue
+		}
+		upload.FileName = strings.TrimPrefix(upload.FileName, prefix)
+		if upload.FileName != "" {
+			visible = append(visible, upload)
+		}
+	}
+	return visible
+}
+
+func renderCollectionReadme(fields []model.CollectionField, values map[string]string) string {
+	var builder strings.Builder
+	builder.WriteString("# 提交信息\n\n| 字段 | 填写内容 |\n| --- | --- |\n")
+	for _, field := range fields {
+		builder.WriteString("| ")
+		builder.WriteString(collectionMarkdownCell(field.Name))
+		builder.WriteString(" | ")
+		builder.WriteString(collectionMarkdownCell(values[field.Name]))
+		builder.WriteString(" |\n")
+	}
+	return builder.String()
+}
+
+func collectionMarkdownCell(value string) string {
+	value = html.EscapeString(value)
+	value = strings.ReplaceAll(value, "|", "\\|")
+	value = strings.ReplaceAll(value, "\r\n", "<br>")
+	value = strings.ReplaceAll(value, "\n", "<br>")
+	return value
+}
+
+func writeCollectionReadme(c *gin.Context, target, folder, content string) error {
+	now := time.Now()
+	file := &stream.FileStream{
+		Ctx: c.Request.Context(),
+		Obj: &model.Object{
+			Name: "README.md", Size: int64(len(content)), Modified: now, Ctime: now,
+		},
+		Reader:   bytes.NewReader([]byte(content)),
+		Mimetype: "text/markdown; charset=utf-8",
+	}
+	return fs.PutDirectly(c.Request.Context(), stdpath.Join(target, folder), file)
 }
 
 func collectionFileName(raw string) (string, error) {

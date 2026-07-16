@@ -406,15 +406,16 @@ func ListSharings(c *gin.Context) {
 }
 
 type UpdateSharingReq struct {
-	Files       []string   `json:"files"`
-	Expires     *time.Time `json:"expires"`
-	Pwd         string     `json:"pwd"`
-	MaxAccessed int        `json:"max_accessed"`
-	Disabled    bool       `json:"disabled"`
-	Remark      string     `json:"remark"`
-	Readme      string     `json:"readme"`
-	Header      string     `json:"header"`
-	Collect     bool       `json:"collect"`
+	Files            []string   `json:"files"`
+	Expires          *time.Time `json:"expires"`
+	Pwd              string     `json:"pwd"`
+	MaxAccessed      int        `json:"max_accessed"`
+	Disabled         bool       `json:"disabled"`
+	Remark           string     `json:"remark"`
+	Readme           string     `json:"readme"`
+	Header           string     `json:"header"`
+	Collect          bool       `json:"collect"`
+	CollectionFields string     `json:"collection_fields"`
 	model.Sort
 	CreatorName string `json:"creator"`
 	Accessed    int    `json:"accessed"`
@@ -473,6 +474,12 @@ func UpdateSharing(c *gin.Context) {
 			common.ErrorResp(c, err, 400)
 			return
 		}
+		if _, err := parseCollectionFields(req.CollectionFields); err != nil {
+			common.ErrorResp(c, err, 400)
+			return
+		}
+	} else {
+		req.CollectionFields = ""
 	}
 	s, err := op.GetSharingById(req.ID)
 	if err != nil || (!reqUser.IsAdmin() && s.CreatorId != user.ID) {
@@ -493,6 +500,7 @@ func UpdateSharing(c *gin.Context) {
 	s.Readme = req.Readme
 	s.Remark = req.Remark
 	s.Collect = req.Collect
+	s.CollectionFields = req.CollectionFields
 	s.Creator = user
 	if req.NewID != "" && req.NewID != req.ID {
 		if !reqUser.CanCustomizeShareID() {
@@ -564,20 +572,27 @@ func CreateSharing(c *gin.Context) {
 			common.ErrorResp(c, err, 400)
 			return
 		}
+		if _, err := parseCollectionFields(req.CollectionFields); err != nil {
+			common.ErrorResp(c, err, 400)
+			return
+		}
+	} else {
+		req.CollectionFields = ""
 	}
 	s := &model.Sharing{
 		SharingDB: &model.SharingDB{
-			ID:          req.ID,
-			Expires:     req.Expires,
-			Pwd:         req.Pwd,
-			Accessed:    req.Accessed,
-			MaxAccessed: req.MaxAccessed,
-			Disabled:    req.Disabled,
-			Sort:        req.Sort,
-			Remark:      req.Remark,
-			Readme:      req.Readme,
-			Header:      req.Header,
-			Collect:     req.Collect,
+			ID:               req.ID,
+			Expires:          req.Expires,
+			Pwd:              req.Pwd,
+			Accessed:         req.Accessed,
+			MaxAccessed:      req.MaxAccessed,
+			Disabled:         req.Disabled,
+			Sort:             req.Sort,
+			Remark:           req.Remark,
+			Readme:           req.Readme,
+			Header:           req.Header,
+			Collect:          req.Collect,
+			CollectionFields: req.CollectionFields,
 		},
 		Files:   req.Files,
 		Creator: user,

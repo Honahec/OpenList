@@ -47,14 +47,15 @@ type ObjResp struct {
 }
 
 type FsListResp struct {
-	Content            []ObjResp `json:"content"`
-	Total              int64     `json:"total"`
-	Readme             string    `json:"readme"`
-	Header             string    `json:"header"`
-	Write              bool      `json:"write"`
-	WriteContentBypass bool      `json:"write_content_bypass"`
-	Provider           string    `json:"provider"`
-	DirectUploadTools  []string  `json:"direct_upload_tools,omitempty"`
+	Content            []ObjResp           `json:"content"`
+	Total              int64               `json:"total"`
+	Readme             string              `json:"readme"`
+	Header             string              `json:"header"`
+	Write              bool                `json:"write"`
+	WriteContentBypass bool                `json:"write_content_bypass"`
+	Provider           string              `json:"provider"`
+	DirectUploadTools  []string            `json:"direct_upload_tools,omitempty"`
+	CollectionForm     *collectionFormResp `json:"collection_form,omitempty"`
 }
 
 func FsListSplit(c *gin.Context) {

@@ -3,18 +3,19 @@ package model
 import "time"
 
 type SharingDB struct {
-	ID          string     `json:"id" gorm:"type:varchar(64);primaryKey"`
-	FilesRaw    string     `json:"-" gorm:"type:text"`
-	Expires     *time.Time `json:"expires"`
-	Pwd         string     `json:"pwd"`
-	Accessed    int        `json:"accessed"`
-	MaxAccessed int        `json:"max_accessed"`
-	CreatorId   uint       `json:"-"`
-	Disabled    bool       `json:"disabled"`
-	Remark      string     `json:"remark"`
-	Readme      string     `json:"readme" gorm:"type:text"`
-	Header      string     `json:"header" gorm:"type:text"`
-	Collect     bool       `json:"collect"`
+	ID               string     `json:"id" gorm:"type:varchar(64);primaryKey"`
+	FilesRaw         string     `json:"-" gorm:"type:text"`
+	Expires          *time.Time `json:"expires"`
+	Pwd              string     `json:"pwd"`
+	Accessed         int        `json:"accessed"`
+	MaxAccessed      int        `json:"max_accessed"`
+	CreatorId        uint       `json:"-"`
+	Disabled         bool       `json:"disabled"`
+	Remark           string     `json:"remark"`
+	Readme           string     `json:"readme" gorm:"type:text"`
+	Header           string     `json:"header" gorm:"type:text"`
+	Collect          bool       `json:"collect"`
+	CollectionFields string     `json:"collection_fields" gorm:"type:text"`
 	Sort
 }
 
@@ -34,6 +35,22 @@ type CollectionUpload struct {
 	Expires     time.Time  `json:"expires" gorm:"index"`
 	Completed   bool       `json:"completed" gorm:"index:idx_collection_visitor,priority:3"`
 	CompletedAt *time.Time `json:"completed_at"`
+}
+
+type CollectionField struct {
+	Name     string `json:"name"`
+	Required bool   `json:"required"`
+}
+
+type CollectionSubmission struct {
+	ID          uint              `json:"-" gorm:"primaryKey"`
+	SharingID   string            `json:"sharing_id" gorm:"type:varchar(64);uniqueIndex:idx_collection_submission"`
+	VisitorHash string            `json:"-" gorm:"type:char(64);uniqueIndex:idx_collection_submission"`
+	FolderName  string            `json:"folder_name" gorm:"type:varchar(64)"`
+	ValuesRaw   string            `json:"-" gorm:"type:text"`
+	Values      map[string]string `json:"values" gorm:"-"`
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
 }
 
 func (s *Sharing) Valid() bool {

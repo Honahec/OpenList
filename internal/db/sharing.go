@@ -77,13 +77,19 @@ func UpdateSharingId(oldId, newId string) error {
 		if err := tx.Model(&model.SharingDB{}).Where("id = ?", oldId).Update("id", newId).Error; err != nil {
 			return err
 		}
-		return tx.Model(&model.CollectionUpload{}).Where("sharing_id = ?", oldId).Update("sharing_id", newId).Error
+		if err := tx.Model(&model.CollectionUpload{}).Where("sharing_id = ?", oldId).Update("sharing_id", newId).Error; err != nil {
+			return err
+		}
+		return tx.Model(&model.CollectionSubmission{}).Where("sharing_id = ?", oldId).Update("sharing_id", newId).Error
 	}))
 }
 
 func DeleteSharingById(id string) error {
 	return errors.WithStack(db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("sharing_id = ?", id).Delete(&model.CollectionUpload{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("sharing_id = ?", id).Delete(&model.CollectionSubmission{}).Error; err != nil {
 			return err
 		}
 		return tx.Where(model.SharingDB{ID: id}).Delete(&model.SharingDB{}).Error
@@ -94,6 +100,9 @@ func DeleteSharingsByCreatorId(creatorId uint) error {
 	return errors.WithStack(db.Transaction(func(tx *gorm.DB) error {
 		ids := tx.Model(&model.SharingDB{}).Select("id").Where("creator_id = ?", creatorId)
 		if err := tx.Where("sharing_id IN (?)", ids).Delete(&model.CollectionUpload{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("sharing_id IN (?)", ids).Delete(&model.CollectionSubmission{}).Error; err != nil {
 			return err
 		}
 		return tx.Where("creator_id = ?", creatorId).Delete(&model.SharingDB{}).Error
@@ -155,4 +164,20 @@ func CompleteCollectionUpload(id, sharingID string) (bool, error) {
 
 func DeleteCollectionUpload(id string) error {
 	return errors.WithStack(db.Where("id = ?", id).Delete(&model.CollectionUpload{}).Error)
+}
+
+func GetCollectionSubmission(sharingID, visitorHash string) (*model.CollectionSubmission, error) {
+	submission := model.CollectionSubmission{}
+	err := db.Where("sharing_id = ? AND visitor_hash = ?", sharingID, visitorHash).First(&submission).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return &submission, nil
+}
+
+func SaveCollectionSubmission(submission *model.CollectionSubmission) error {
+	return errors.WithStack(db.Save(submission).Error)
 }

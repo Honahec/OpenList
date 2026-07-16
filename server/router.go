@@ -106,6 +106,7 @@ func Init(e *gin.Engine) {
 	collection.POST("/get_direct_upload_part_info", handles.CollectionGetDirectUploadPartInfo)
 	collection.POST("/complete_direct_upload", handles.CollectionCompleteDirectUpload)
 	collection.POST("/abort_direct_upload", handles.CollectionAbortDirectUpload)
+	collection.POST("/submission", handles.CollectionUpdateSubmission)
 
 	_fs(auth.Group("/fs"))
 	fsAndShare(api.Group("/fs", middlewares.Auth(true)))

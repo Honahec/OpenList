@@ -184,3 +184,27 @@ func CompleteCollectionUpload(id, sharingID string) (bool, error) {
 func DeleteCollectionUpload(id string) error {
 	return db.DeleteCollectionUpload(id)
 }
+
+func GetCollectionSubmission(sharingID, visitorHash string) (*model.CollectionSubmission, error) {
+	submission, err := db.GetCollectionSubmission(sharingID, visitorHash)
+	if err != nil || submission == nil {
+		return submission, err
+	}
+	values := make(map[string]string)
+	if submission.ValuesRaw != "" {
+		if err := utils.Json.UnmarshalFromString(submission.ValuesRaw, &values); err != nil {
+			return nil, errors.WithStack(err)
+		}
+	}
+	submission.Values = values
+	return submission, nil
+}
+
+func SaveCollectionSubmission(submission *model.CollectionSubmission) error {
+	valuesRaw, err := utils.Json.MarshalToString(submission.Values)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	submission.ValuesRaw = valuesRaw
+	return db.SaveCollectionSubmission(submission)
+}
