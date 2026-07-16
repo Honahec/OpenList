@@ -1,9 +1,13 @@
 package db
 
 import (
+	"time"
+
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
 	"github.com/OpenListTeam/OpenList/v4/pkg/utils/random"
 	"github.com/pkg/errors"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func GetSharingById(id string) (*model.SharingDB, error) {
@@ -69,14 +73,73 @@ func UpdateSharingId(oldId, newId string) error {
 	if err := db.Where("id = ?", newId).First(&model.SharingDB{}).Error; err == nil {
 		return errors.New("sharing id already exists")
 	}
-	return errors.WithStack(db.Model(&model.SharingDB{}).Where("id = ?", oldId).Update("id", newId).Error)
+	return errors.WithStack(db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&model.SharingDB{}).Where("id = ?", oldId).Update("id", newId).Error; err != nil {
+			return err
+		}
+		return tx.Model(&model.CollectionUpload{}).Where("sharing_id = ?", oldId).Update("sharing_id", newId).Error
+	}))
 }
 
 func DeleteSharingById(id string) error {
-	s := model.SharingDB{ID: id}
-	return errors.WithStack(db.Where(s).Delete(&s).Error)
+	return errors.WithStack(db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("sharing_id = ?", id).Delete(&model.CollectionUpload{}).Error; err != nil {
+			return err
+		}
+		return tx.Where(model.SharingDB{ID: id}).Delete(&model.SharingDB{}).Error
+	}))
 }
 
 func DeleteSharingsByCreatorId(creatorId uint) error {
-	return errors.WithStack(db.Where("creator_id = ?", creatorId).Delete(&model.SharingDB{}).Error)
+	return errors.WithStack(db.Transaction(func(tx *gorm.DB) error {
+		ids := tx.Model(&model.SharingDB{}).Select("id").Where("creator_id = ?", creatorId)
+		if err := tx.Where("sharing_id IN (?)", ids).Delete(&model.CollectionUpload{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("creator_id = ?", creatorId).Delete(&model.SharingDB{}).Error
+	}))
+}
+
+func CreateCollectionUpload(upload *model.CollectionUpload) error {
+	return errors.WithStack(db.Create(upload).Error)
+}
+
+func GetCollectionUpload(id string) (*model.CollectionUpload, error) {
+	upload := model.CollectionUpload{ID: id}
+	if err := db.Where(upload).First(&upload).Error; err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return &upload, nil
+}
+
+func CompleteCollectionUpload(id, sharingID string) (bool, error) {
+	alreadyCompleted := false
+	err := db.Transaction(func(tx *gorm.DB) error {
+		upload := model.CollectionUpload{}
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND sharing_id = ?", id, sharingID).First(&upload).Error; err != nil {
+			return err
+		}
+		if upload.Completed {
+			alreadyCompleted = true
+			return nil
+		}
+		if time.Now().After(upload.Expires) {
+			return errors.New("collection upload session expired")
+		}
+		result := tx.Model(&model.SharingDB{}).
+			Where("id = ? AND disabled = ? AND (max_accessed = 0 OR accessed < max_accessed)", sharingID, false).
+			UpdateColumn("accessed", gorm.Expr("accessed + ?", 1))
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return errors.New("collection upload limit reached")
+		}
+		return tx.Model(&upload).UpdateColumn("completed", true).Error
+	})
+	return alreadyCompleted, errors.WithStack(err)
+}
+
+func DeleteCollectionUpload(id string) error {
+	return errors.WithStack(db.Where("id = ?", id).Delete(&model.CollectionUpload{}).Error)
 }

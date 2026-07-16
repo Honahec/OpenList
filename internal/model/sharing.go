@@ -14,6 +14,7 @@ type SharingDB struct {
 	Remark      string     `json:"remark"`
 	Readme      string     `json:"readme" gorm:"type:text"`
 	Header      string     `json:"header" gorm:"type:text"`
+	Collect     bool       `json:"collect"`
 	Sort
 }
 
@@ -21,6 +22,16 @@ type Sharing struct {
 	*SharingDB
 	Files   []string `json:"files"`
 	Creator *User    `json:"-"`
+}
+
+type CollectionUpload struct {
+	ID        string    `json:"id" gorm:"type:varchar(32);primaryKey"`
+	SharingID string    `json:"sharing_id" gorm:"type:varchar(64);index"`
+	FileName  string    `json:"file_name" gorm:"type:text"`
+	FileSize  int64     `json:"file_size"`
+	UploadID  string    `json:"upload_id" gorm:"type:text"`
+	Expires   time.Time `json:"expires" gorm:"index"`
+	Completed bool      `json:"completed"`
 }
 
 func (s *Sharing) Valid() bool {
@@ -40,6 +51,10 @@ func (s *Sharing) Valid() bool {
 		return false
 	}
 	return true
+}
+
+func (s *Sharing) ValidForRead() bool {
+	return !s.Collect && s.Valid()
 }
 
 func (s *Sharing) Verify(pwd string) bool {

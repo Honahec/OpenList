@@ -160,3 +160,23 @@ func DeleteSharing(sid string) error {
 func DeleteSharingsByCreatorId(creatorId uint) error {
 	return db.DeleteSharingsByCreatorId(creatorId)
 }
+
+func CreateCollectionUpload(upload *model.CollectionUpload) error {
+	return db.CreateCollectionUpload(upload)
+}
+
+func GetCollectionUpload(id string) (*model.CollectionUpload, error) {
+	return db.GetCollectionUpload(id)
+}
+
+func CompleteCollectionUpload(id, sharingID string) (bool, error) {
+	alreadyCompleted, err := db.CompleteCollectionUpload(id, sharingID)
+	if err == nil {
+		sharingCache.Del(sharingID)
+	}
+	return alreadyCompleted, err
+}
+
+func DeleteCollectionUpload(id string) error {
+	return db.DeleteCollectionUpload(id)
+}

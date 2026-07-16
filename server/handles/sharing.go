@@ -10,6 +10,7 @@ import (
 	"github.com/OpenListTeam/OpenList/v4/internal/conf"
 	"github.com/OpenListTeam/OpenList/v4/internal/driver"
 	"github.com/OpenListTeam/OpenList/v4/internal/errs"
+	"github.com/OpenListTeam/OpenList/v4/internal/fs"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
 	"github.com/OpenListTeam/OpenList/v4/internal/op"
 	"github.com/OpenListTeam/OpenList/v4/internal/setting"
@@ -195,7 +196,7 @@ func SharingDown(c *gin.Context) {
 	pwd := c.Query("pwd")
 	s, err := op.GetSharingById(sid)
 	if err == nil {
-		if !s.Valid() {
+		if !s.ValidForRead() {
 			err = errs.InvalidSharing
 		} else if !s.Verify(pwd) {
 			err = errs.WrongShareCode
@@ -262,7 +263,7 @@ func SharingArchiveExtract(c *gin.Context) {
 	archivePass := c.Query("pass")
 	s, err := op.GetSharingById(sid)
 	if err == nil {
-		if !s.Valid() {
+		if !s.ValidForRead() {
 			err = errs.InvalidSharing
 		} else if !s.Verify(pwd) {
 			err = errs.WrongShareCode
@@ -413,6 +414,7 @@ type UpdateSharingReq struct {
 	Remark      string     `json:"remark"`
 	Readme      string     `json:"readme"`
 	Header      string     `json:"header"`
+	Collect     bool       `json:"collect"`
 	model.Sort
 	CreatorName string `json:"creator"`
 	Accessed    int    `json:"accessed"`
@@ -466,6 +468,12 @@ func UpdateSharing(c *gin.Context) {
 			return
 		}
 	}
+	if req.Collect {
+		if err := validateCollectionTarget(c, req.Files); err != nil {
+			common.ErrorResp(c, err, 400)
+			return
+		}
+	}
 	s, err := op.GetSharingById(req.ID)
 	if err != nil || (!reqUser.IsAdmin() && s.CreatorId != user.ID) {
 		common.ErrorStrResp(c, "sharing not found", 404)
@@ -484,6 +492,7 @@ func UpdateSharing(c *gin.Context) {
 	s.Header = req.Header
 	s.Readme = req.Readme
 	s.Remark = req.Remark
+	s.Collect = req.Collect
 	s.Creator = user
 	if req.NewID != "" && req.NewID != req.ID {
 		if !reqUser.CanCustomizeShareID() {
@@ -550,6 +559,12 @@ func CreateSharing(c *gin.Context) {
 			return
 		}
 	}
+	if req.Collect {
+		if err := validateCollectionTarget(c, req.Files); err != nil {
+			common.ErrorResp(c, err, 400)
+			return
+		}
+	}
 	s := &model.Sharing{
 		SharingDB: &model.SharingDB{
 			ID:          req.ID,
@@ -562,6 +577,7 @@ func CreateSharing(c *gin.Context) {
 			Remark:      req.Remark,
 			Readme:      req.Readme,
 			Header:      req.Header,
+			Collect:     req.Collect,
 		},
 		Files:   req.Files,
 		Creator: user,
@@ -577,6 +593,20 @@ func CreateSharing(c *gin.Context) {
 			CreatorRole: s.Creator.Role,
 		})
 	}
+}
+
+func validateCollectionTarget(c *gin.Context, files []string) error {
+	if len(files) != 1 {
+		return errors.New("collection must contain exactly one target folder")
+	}
+	obj, err := fs.Get(c.Request.Context(), files[0], &fs.GetArgs{NoLog: true})
+	if err != nil {
+		return errors.WithMessage(err, "failed to get collection target")
+	}
+	if obj == nil || !obj.IsDir() {
+		return errors.New("collection target must be a folder")
+	}
+	return nil
 }
 
 func DeleteSharing(c *gin.Context) {
