@@ -20,6 +20,10 @@ const responseHeaders = (origin: string | null, allowedOrigin: string) => {
     headers.set("Access-Control-Allow-Origin", origin)
     headers.set("Access-Control-Allow-Methods", "PUT, OPTIONS")
     headers.set("Access-Control-Allow-Headers", "Content-Type")
+    headers.set(
+      "Access-Control-Expose-Headers",
+      "Server-Timing, X-OpenList-Upstream-Duration",
+    )
     headers.set("Access-Control-Max-Age", "600")
   }
   return headers
@@ -40,6 +44,7 @@ const upstreamErrorResponse = async (
   upstream: Response,
   request: Request,
   target: URL,
+  upstreamDuration: number,
   origin: string | null,
   allowedOrigin: string,
 ) => {
@@ -63,6 +68,7 @@ const upstreamErrorResponse = async (
   const diagnostic = {
     upstream_status: upstream.status,
     upstream_host: target.hostname,
+    upstream_duration_ms: upstreamDuration,
     cf_colo: cfRequest.cf?.colo,
     cf_ray: request.headers.get("cf-ray") ?? undefined,
     ...details,
@@ -163,17 +169,20 @@ export default {
       if (!token) throw new Error("upload token is required")
       const payload = await decryptPayload(token, env.UPLOAD_GATEWAY_KEY)
       const target = validateTarget(payload)
+      const upstreamStarted = Date.now()
       const upstream = await fetch(target, {
         method: "POST",
         headers: { "Content-Type": contentType },
         body: request.body,
         redirect: "manual",
       })
+      const upstreamDuration = Date.now() - upstreamStarted
       if (!upstream.ok) {
         return upstreamErrorResponse(
           upstream,
           request,
           target,
+          upstreamDuration,
           origin,
           env.ALLOWED_ORIGIN,
         )
@@ -182,6 +191,20 @@ export default {
         status: upstream.status,
         statusText: upstream.statusText,
         headers,
+      })
+      response.headers.set("Server-Timing", `baidu;dur=${upstreamDuration}`)
+      response.headers.set(
+        "X-OpenList-Upstream-Duration",
+        String(upstreamDuration),
+      )
+      const cfRequest = request as Request & { cf?: { colo?: string } }
+      console.log("Baidu upload completed", {
+        upstream_status: upstream.status,
+        upstream_host: target.hostname,
+        upstream_duration_ms: upstreamDuration,
+        content_length: request.headers.get("content-length") ?? undefined,
+        cf_colo: cfRequest.cf?.colo,
+        cf_ray: request.headers.get("cf-ray") ?? undefined,
       })
       const upstreamType = upstream.headers.get("Content-Type")
       if (upstreamType) response.headers.set("Content-Type", upstreamType)
