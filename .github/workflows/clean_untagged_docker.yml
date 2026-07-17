@@ -15,6 +15,10 @@ on:
         description: 'The owner of the package (user or organization)'
         required: false
         default: 'openlistteam'
+      tag_prefix:
+        description: 'Delete versions with a container tag matching this prefix; leave empty to clean untagged versions'
+        required: false
+        default: ''
       older_than:
         description: 'Delete untagged images older than this many days'
         required: false
@@ -46,11 +50,13 @@ jobs:
           TOLERANCE_VAL="${{ github.event.inputs.untagged_timestamp_tolerance || '10000' }}"
           TOKEN_INPUT="${{ github.event.inputs.token || '' }}"
           OWNER="${{ github.event.inputs.owner || 'openlistteam' }}"
+          TAG_PREFIX="${{ github.event.inputs.tag_prefix || '' }}"
 
           echo "package_name=$PACKAGE" >> "$GITHUB_OUTPUT"
           echo "older_than=$OLDER" >> "$GITHUB_OUTPUT"
           echo "tolerance=$TOLERANCE_VAL" >> "$GITHUB_OUTPUT"
           echo "owner=$OWNER" >> "$GITHUB_OUTPUT"
+          echo "tag_prefix=$TAG_PREFIX" >> "$GITHUB_OUTPUT"
 
           if [[ -z "$TOKEN_INPUT" ]]; then
             echo "::notice:: No token provided, using GITHUB_TOKEN instead."
@@ -120,22 +126,29 @@ jobs:
 
           echo "temp_file=$TEMP_FILE" >> "$GITHUB_OUTPUT"
 
-      - name: Filter untagged versions
+      - name: Filter package versions
         id: filter
         shell: bash
         run: |
           OLDER_THAN="${{ steps.setup.outputs.older_than }}"
           TOLERANCE="${{ steps.setup.outputs.tolerance }}"
           TEMP_FILE="${{ steps.fetch.outputs.temp_file }}"
+          TAG_PREFIX="${{ steps.setup.outputs.tag_prefix }}"
 
           TO_DELETE=$(jq -c -s \
             --arg older_than "$OLDER_THAN" \
             --arg tolerance "$TOLERANCE" \
+            --arg tag_prefix "$TAG_PREFIX" \
             '
               def abs: if . < 0 then -. else . end;
               def to_ms: sub("\\.[0-9]+Z$"; "Z") | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime * 1000;
 
               . as $all |
+              if $tag_prefix != "" then
+                $all[] |
+                select((.metadata.container.tags // []) | any(.[]; startswith($tag_prefix))) |
+                {id, name, tags: .metadata.container.tags}
+              else
               ($older_than | tonumber) as $older_than_val |
               ($tolerance | tonumber) as $tolerance_val |
               now as $now |
@@ -156,6 +169,7 @@ jobs:
 
               select($pass_age and $pass_tolerance) |
               {id, name}
+              end
             ' "$TEMP_FILE")
           
           rm -f "$TEMP_FILE"
@@ -166,7 +180,11 @@ jobs:
             DELETE_COUNT=$(echo "$TO_DELETE" | wc -l | tr -d ' ')
           fi
           
-          echo "Found $DELETE_COUNT untagged images no longer necessary"
+          if [[ -n "$TAG_PREFIX" ]]; then
+            echo "Found $DELETE_COUNT package versions matching tag prefix '$TAG_PREFIX'"
+          else
+            echo "Found $DELETE_COUNT untagged images no longer necessary"
+          fi
 
           {
             echo 'to_delete<<EOF'
@@ -203,7 +221,7 @@ jobs:
                 "$DELETE_URL")
               
               if [[ "$HTTP_CODE" == "204" ]]; then
-                echo "Deleted untagged container image '${NAME}'"
+                echo "Deleted container image '${NAME}'"
               else
                 echo "::warning:: Failed to delete ${NAME} (ID: ${ID}). HTTP Status: ${HTTP_CODE}"
               fi
