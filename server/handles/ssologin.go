@@ -31,6 +31,12 @@ const stateExpire = time.Minute * 5
 
 var stateCache = cache.NewMemCache[string](cache.WithShards[string](stateLength))
 
+func disableSSOCache(c *gin.Context) {
+	c.Header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	c.Header("Pragma", "no-cache")
+	c.Header("Expires", "0")
+}
+
 func _keyState(clientID, state string) string {
 	return fmt.Sprintf("%s_%s", clientID, state)
 }
@@ -55,6 +61,7 @@ func ssoRedirectUri(c *gin.Context, useCompatibility bool, method string) string
 }
 
 func SSOLoginRedirect(c *gin.Context) {
+	disableSSOCache(c)
 	method := c.Query("method")
 	useCompatibility := setting.GetBool(conf.SSOCompatibilityMode)
 	enabled := setting.GetBool(conf.SSOLoginEnabled)
@@ -282,6 +289,7 @@ func OIDCLoginCallback(c *gin.Context) {
 }
 
 func SSOLoginCallback(c *gin.Context) {
+	disableSSOCache(c)
 	enabled := setting.GetBool(conf.SSOLoginEnabled)
 	usecompatibility := setting.GetBool(conf.SSOCompatibilityMode)
 	if !enabled {
