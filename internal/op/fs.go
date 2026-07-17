@@ -779,7 +779,7 @@ func GetDirectUploadTools(storage driver.Driver) []string {
 	return du.GetDirectUploadTools()
 }
 
-func GetDirectUploadInfo(ctx context.Context, tool string, storage driver.Driver, dstDirPath, dstName string, fileSize int64, overwrite bool) (any, error) {
+func GetDirectUploadInfo(ctx context.Context, tool string, storage driver.Driver, dstDirPath, dstName string, fileSize int64, overwrite bool, partHashes ...[]string) (any, error) {
 	du, ok := storage.(driver.DirectUploader)
 	if !ok {
 		return nil, errors.WithStack(errs.NotImplement)
@@ -807,7 +807,16 @@ func GetDirectUploadInfo(ctx context.Context, tool string, storage driver.Driver
 	if err != nil {
 		return nil, errors.WithMessagef(err, "failed to get dir [%s]", dstDirPath)
 	}
-	info, err := du.GetDirectUploadInfo(ctx, tool, dstDir, dstName, fileSize)
+	var hashes []string
+	if len(partHashes) > 0 {
+		hashes = partHashes[0]
+	}
+	var info any
+	if hashRequester, ok := storage.(driver.DirectUploadHashRequester); ok {
+		info, err = hashRequester.GetDirectUploadInfoWithHashes(ctx, tool, dstDir, dstName, fileSize, hashes)
+	} else {
+		info, err = du.GetDirectUploadInfo(ctx, tool, dstDir, dstName, fileSize)
+	}
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}

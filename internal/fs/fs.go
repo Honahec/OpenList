@@ -199,8 +199,12 @@ func PutURL(ctx context.Context, path, dstName, urlStr string) error {
 	return op.PutURL(ctx, storage, dstDirActualPath, dstName, urlStr)
 }
 
-func GetDirectUploadInfo(ctx context.Context, tool, path, dstName string, fileSize int64, overwrite bool) (any, error) {
-	info, err := getDirectUploadInfo(ctx, tool, path, dstName, fileSize, overwrite)
+func GetDirectUploadInfo(ctx context.Context, tool, path, dstName string, fileSize int64, overwrite bool, partHashes ...[]string) (any, error) {
+	var hashes []string
+	if len(partHashes) > 0 {
+		hashes = partHashes[0]
+	}
+	info, err := getDirectUploadInfo(ctx, tool, path, dstName, fileSize, overwrite, hashes)
 	if err != nil {
 		log.Errorf("failed get %s direct upload info for %s(%d bytes): %+v", path, dstName, fileSize, err)
 	}

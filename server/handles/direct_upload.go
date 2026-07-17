@@ -13,10 +13,11 @@ import (
 )
 
 type FsGetDirectUploadInfoReq struct {
-	Path     string `json:"path" form:"path"`
-	FileName string `json:"file_name" form:"file_name"`
-	FileSize int64  `json:"file_size" form:"file_size"`
-	Tool     string `json:"tool" form:"tool"`
+	Path       string   `json:"path" form:"path"`
+	FileName   string   `json:"file_name" form:"file_name"`
+	FileSize   int64    `json:"file_size" form:"file_size"`
+	Tool       string   `json:"tool" form:"tool"`
+	PartHashes []string `json:"part_hashes" form:"part_hashes"`
 }
 
 type FsDirectUploadSessionReq struct {
@@ -65,7 +66,7 @@ func FsGetDirectUploadInfo(c *gin.Context) {
 			return
 		}
 	}
-	directUploadInfo, err := fs.GetDirectUploadInfo(c, req.Tool, path, req.FileName, req.FileSize, overwrite)
+	directUploadInfo, err := fs.GetDirectUploadInfo(c, req.Tool, path, req.FileName, req.FileSize, overwrite, req.PartHashes)
 	if err != nil {
 		if !overwrite && errs.IsObjectAlreadyExists(err) {
 			common.ErrorStrResp(c, "file exists", 403)

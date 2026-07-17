@@ -26,13 +26,14 @@ import (
 )
 
 type collectionReq struct {
-	Password      string `json:"password" form:"password"`
-	FileName      string `json:"file_name" form:"file_name"`
-	FileSize      int64  `json:"file_size" form:"file_size"`
-	UploadID      string `json:"upload_id" form:"upload_id"`
-	PartNumber    int64  `json:"part_number" form:"part_number"`
-	UploadToken   string `json:"upload_token" form:"upload_token"`
-	UploadSession string `json:"upload_session" form:"upload_session"`
+	Password      string   `json:"password" form:"password"`
+	FileName      string   `json:"file_name" form:"file_name"`
+	FileSize      int64    `json:"file_size" form:"file_size"`
+	UploadID      string   `json:"upload_id" form:"upload_id"`
+	PartNumber    int64    `json:"part_number" form:"part_number"`
+	UploadToken   string   `json:"upload_token" form:"upload_token"`
+	UploadSession string   `json:"upload_session" form:"upload_session"`
+	PartHashes    []string `json:"part_hashes" form:"part_hashes"`
 }
 
 type collectionUploadInfo struct {
@@ -222,9 +223,13 @@ func CollectionGetDirectUploadInfo(c *gin.Context) {
 		name = stdpath.Join(submission.FolderName, name)
 	}
 	name = uniqueCollectionName(c, target, name)
-	info, err := fs.GetDirectUploadInfo(c, "HttpDirect", target, name, req.FileSize, false)
+	info, err := fs.GetDirectUploadInfo(c, "HttpDirect", target, name, req.FileSize, false, req.PartHashes)
 	if err != nil {
 		common.ErrorResp(c, err, 500)
+		return
+	}
+	if directUploadNeedsHashing(info) {
+		common.SuccessResp(c, collectionUploadInfo{FileName: name, UploadInfo: info})
 		return
 	}
 	uploadID := ""
@@ -252,6 +257,17 @@ func CollectionGetDirectUploadInfo(c *gin.Context) {
 	}
 	token := sign.WithDuration(collectionUploadTokenData(s.ID, sessionID, name, req.FileSize, uploadID), 4*time.Hour)
 	common.SuccessResp(c, collectionUploadInfo{FileName: name, UploadToken: token, UploadSession: sessionID, UploadInfo: info})
+}
+
+func directUploadNeedsHashing(info any) bool {
+	switch httpInfo := info.(type) {
+	case *model.HttpDirectUploadInfo:
+		return httpInfo != nil && httpInfo.Hashing != nil
+	case model.HttpDirectUploadInfo:
+		return httpInfo.Hashing != nil
+	default:
+		return false
+	}
 }
 
 func CollectionGetDirectUploadPartInfo(c *gin.Context) {

@@ -219,6 +219,13 @@ type DirectUploader interface {
 	GetDirectUploadInfo(ctx context.Context, tool string, dstDir model.Obj, fileName string, fileSize int64) (any, error)
 }
 
+// DirectUploadHashRequester lets a provider request client-side part hashes
+// before creating a direct upload session. Providers that do not need hashes
+// continue to use DirectUploader.GetDirectUploadInfo unchanged.
+type DirectUploadHashRequester interface {
+	GetDirectUploadInfoWithHashes(ctx context.Context, tool string, dstDir model.Obj, fileName string, fileSize int64, partHashes []string) (any, error)
+}
+
 // MultipartDirectUploader extends DirectUploader with storage-native multipart uploads.
 // File contents are uploaded directly from the client to the storage using the
 // presigned part URLs returned by GetDirectUploadPartInfo.
