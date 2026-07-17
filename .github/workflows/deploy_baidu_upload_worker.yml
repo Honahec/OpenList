@@ -1,0 +1,43 @@
+name: Deploy Baidu upload Worker
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "workers/baidu-upload-gateway/**"
+      - ".github/workflows/deploy_baidu_upload_worker.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-baidu-upload-worker
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: workers/baidu-upload-gateway
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: workers/baidu-upload-gateway/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm run check
+      - name: Deploy Worker
+        run: npm run deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Configure gateway secret
+        run: printf '%s' "$UPLOAD_GATEWAY_KEY" | npx wrangler secret put UPLOAD_GATEWAY_KEY
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          UPLOAD_GATEWAY_KEY: ${{ secrets.BAIDU_UPLOAD_GATEWAY_KEY }}
