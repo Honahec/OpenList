@@ -28,6 +28,8 @@ import (
 
 const stateLength = 16
 const stateExpire = time.Minute * 5
+const stateSessionCookie = "openlist_sso_state_session"
+const stateSessionLength = 32
 
 var stateCache = cache.NewMemCache[string](cache.WithShards[string](stateLength))
 
@@ -41,15 +43,56 @@ func _keyState(clientID, state string) string {
 	return fmt.Sprintf("%s_%s", clientID, state)
 }
 
-func generateState(clientID, ip string) string {
+func validStateSession(session string) bool {
+	if len(session) != stateSessionLength {
+		return false
+	}
+	for _, char := range session {
+		if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9')) {
+			return false
+		}
+	}
+	return true
+}
+
+func stateCookieSecure(c *gin.Context) bool {
+	if c.Request.TLS != nil {
+		return true
+	}
+	proto := strings.TrimSpace(strings.Split(c.GetHeader("X-Forwarded-Proto"), ",")[0])
+	return strings.EqualFold(proto, "https")
+}
+
+func ensureStateSession(c *gin.Context) string {
+	session, err := c.Cookie(stateSessionCookie)
+	if err == nil && validStateSession(session) {
+		return session
+	}
+	session = random.String(stateSessionLength)
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(stateSessionCookie, session, int(stateExpire.Seconds()), "/", "", stateCookieSecure(c), true)
+	return session
+}
+
+func getStateSession(c *gin.Context) (string, bool) {
+	session, err := c.Cookie(stateSessionCookie)
+	return session, err == nil && validStateSession(session)
+}
+
+func generateState(clientID, session string) string {
 	state := random.String(stateLength)
-	stateCache.Set(_keyState(clientID, state), ip, cache.WithEx[string](stateExpire))
+	stateCache.Set(_keyState(clientID, state), session, cache.WithEx[string](stateExpire))
 	return state
 }
 
-func verifyState(clientID, ip, state string) bool {
-	value, ok := stateCache.Get(_keyState(clientID, state))
-	return ok && value == ip
+func verifyState(clientID, session, state string) bool {
+	key := _keyState(clientID, state)
+	value, ok := stateCache.Get(key)
+	if !ok || value != session {
+		return false
+	}
+	stateCache.Del(key)
+	return true
 }
 
 func ssoRedirectUri(c *gin.Context, useCompatibility bool, method string) string {
@@ -108,7 +151,7 @@ func SSOLoginRedirect(c *gin.Context) {
 			common.ErrorStrResp(c, err.Error(), 400)
 			return
 		}
-		state := generateState(clientId, c.ClientIP())
+		state := generateState(clientId, ensureStateSession(c))
 		c.Redirect(http.StatusFound, oauth2Config.AuthCodeURL(state))
 		return
 	default:
@@ -208,7 +251,8 @@ func OIDCLoginCallback(c *gin.Context) {
 		common.ErrorResp(c, err, 400)
 		return
 	}
-	if !verifyState(clientId, c.ClientIP(), c.Query("state")) {
+	session, ok := getStateSession(c)
+	if !ok || !verifyState(clientId, session, c.Query("state")) {
 		common.ErrorStrResp(c, "incorrect or expired state parameter", 400)
 		return
 	}
