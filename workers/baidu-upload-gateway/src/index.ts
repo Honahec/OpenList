@@ -36,6 +36,47 @@ const errorResponse = (
   return new Response(JSON.stringify({ error: message }), { status, headers })
 }
 
+const upstreamErrorResponse = async (
+  upstream: Response,
+  request: Request,
+  target: URL,
+  origin: string | null,
+  allowedOrigin: string,
+) => {
+  const rawBody = await upstream.text()
+  let details: Record<string, unknown> = {}
+  try {
+    const parsed = JSON.parse(rawBody) as Record<string, unknown>
+    const code = parsed.error_code ?? parsed.errno
+    const message = parsed.error_msg ?? parsed.errmsg ?? parsed.error_description
+    if (typeof code === "number" || typeof code === "string") {
+      details.upstream_code = code
+    }
+    if (typeof message === "string") {
+      details.upstream_message = message.slice(0, 500)
+    }
+  } catch {
+    if (rawBody) details.upstream_message = rawBody.slice(0, 500)
+  }
+
+  const cfRequest = request as Request & { cf?: { colo?: string } }
+  const diagnostic = {
+    upstream_status: upstream.status,
+    upstream_host: target.hostname,
+    cf_colo: cfRequest.cf?.colo,
+    cf_ray: request.headers.get("cf-ray") ?? undefined,
+    ...details,
+  }
+  console.error("Baidu upload rejected", diagnostic)
+
+  const headers = responseHeaders(origin, allowedOrigin)
+  headers.set("Content-Type", "application/json; charset=utf-8")
+  return new Response(
+    JSON.stringify({ error: "Baidu rejected the upload part", ...diagnostic }),
+    { status: upstream.status, headers },
+  )
+}
+
 const decodeBase64URL = (value: string) => {
   const normalized = value.replace(/-/g, "+").replace(/_/g, "/")
   const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=")
@@ -128,6 +169,15 @@ export default {
         body: request.body,
         redirect: "manual",
       })
+      if (!upstream.ok) {
+        return upstreamErrorResponse(
+          upstream,
+          request,
+          target,
+          origin,
+          env.ALLOWED_ORIGIN,
+        )
+      }
       const response = new Response(upstream.body, {
         status: upstream.status,
         statusText: upstream.statusText,
